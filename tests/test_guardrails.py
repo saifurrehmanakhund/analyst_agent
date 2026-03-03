@@ -1,7 +1,7 @@
 """Tests for the guardrails module."""
 
 import pytest
-from src.guardrails import check_pii_columns, check_pii_in_question
+from src.guardrails import check_pii_columns, check_pii_in_question, check_malicious_input
 
 
 class TestPIIColumns:
@@ -100,3 +100,87 @@ class TestPIIInQuestion:
         """Should block credit card requests."""
         has_pii, msg = check_pii_in_question("Show credit card numbers")
         assert has_pii is True
+
+
+class TestMaliciousInput:
+    """Test malicious code injection detection."""
+    
+    def test_exec_injection(self):
+        """Should block exec() attempts."""
+        is_malicious, msg = check_malicious_input("What is exec('import os')?")
+        assert is_malicious is True
+        assert msg is not None
+    
+    def test_eval_injection(self):
+        """Should block eval() attempts."""
+        is_malicious, msg = check_malicious_input("Calculate eval(open('/etc/passwd').read())")
+        assert is_malicious is True
+    
+    def test_import_injection(self):
+        """Should block __import__ attempts."""
+        is_malicious, msg = check_malicious_input("Use __import__('os').system('ls')")
+        assert is_malicious is True
+    
+    def test_os_system_injection(self):
+        """Should block os.system attempts."""
+        is_malicious, msg = check_malicious_input("Run os.system('rm -rf /')")
+        assert is_malicious is True
+    
+    def test_subprocess_injection(self):
+        """Should block subprocess attempts."""
+        is_malicious, msg = check_malicious_input("Execute using subprocess.call")
+        assert is_malicious is True
+    
+    def test_sql_drop_injection(self):
+        """Should block DROP TABLE attempts."""
+        is_malicious, msg = check_malicious_input("DROP TABLE users")
+        assert is_malicious is True
+    
+    def test_sql_delete_injection(self):
+        """Should block DELETE FROM attempts."""
+        is_malicious, msg = check_malicious_input("DELETE FROM subscriptions WHERE 1=1")
+        assert is_malicious is True
+    
+    def test_sql_update_injection(self):
+        """Should block UPDATE SET attempts."""
+        is_malicious, msg = check_malicious_input("UPDATE users SET password='hacked'")
+        assert is_malicious is True
+    
+    def test_network_requests_injection(self):
+        """Should block requests library usage."""
+        is_malicious, msg = check_malicious_input("Use requests.get to fetch data")
+        assert is_malicious is True
+    
+    def test_file_operations_injection(self):
+        """Should block file write attempts."""
+        is_malicious, msg = check_malicious_input("Write this to a file using write()")
+        assert is_malicious is True
+    
+    def test_safe_question(self):
+        """Should allow safe data questions."""
+        is_malicious, msg = check_malicious_input("How many active users do we have?")
+        assert is_malicious is False
+        assert msg is None
+    
+    def test_safe_aggregation(self):
+        """Should allow safe aggregation queries."""
+        is_malicious, msg = check_malicious_input("What is the total revenue from annual subscriptions?")
+        assert is_malicious is False
+    
+    def test_excessive_length(self):
+        """Should block excessively long questions."""
+        long_question = "A" * 1500
+        is_malicious, msg = check_malicious_input(long_question)
+        assert is_malicious is True
+        assert "too long" in msg.lower()
+    
+    def test_empty_question(self):
+        """Should handle empty questions."""
+        is_malicious, msg = check_malicious_input("")
+        assert is_malicious is False
+        assert msg is None
+    
+    def test_case_insensitive_detection(self):
+        """Should detect malicious patterns case-insensitively."""
+        is_malicious, msg = check_malicious_input("Show me EXEC('malicious code')")
+        assert is_malicious is True

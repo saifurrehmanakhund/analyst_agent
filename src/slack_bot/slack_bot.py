@@ -2,6 +2,8 @@
 
 import os
 import logging
+import re
+from pathlib import Path
 from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.error import BoltError
@@ -37,12 +39,64 @@ if missing_vars:
 # Initialize Slack app
 app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
 
+
+def _to_existing_file_path(candidate: str) -> str | None:
+    """Return normalized existing file path, or None if not found."""
+    if not candidate:
+        return None
+
+    cleaned = candidate.strip().strip("`\"'")
+    cleaned = cleaned.replace("\\", "/")
+    if not cleaned:
+        return None
+
+    path_obj = Path(cleaned)
+    if path_obj.is_file():
+        return str(path_obj)
+
+    workspace_path = Path.cwd() / path_obj
+    if workspace_path.is_file():
+        return str(workspace_path)
+
+    return None
+
+
+def _extract_chart_file_path(result: object) -> str | None:
+    """Extract an existing chart image path from a PandasAI result."""
+    image_exts = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+    if isinstance(result, str):
+        direct = _to_existing_file_path(result)
+        if direct and direct.lower().endswith(image_exts):
+            return direct
+
+        matches = re.findall(r"(?:[\w./\\-]+)\.(?:png|jpg|jpeg|gif|webp)", result, flags=re.IGNORECASE)
+        for match in matches:
+            found = _to_existing_file_path(match)
+            if found:
+                return found
+
+    if isinstance(result, dict):
+        for key in ("path", "file", "filepath", "value", "result"):
+            if key in result:
+                found = _extract_chart_file_path(result[key])
+                if found:
+                    return found
+
+    if isinstance(result, (list, tuple)):
+        for item in result:
+            found = _extract_chart_file_path(item)
+            if found:
+                return found
+
+    return None
+
 # Import AI and formatting modules
 try:
     from engine.pandas_ai import query_pandasai
     from engine.client import QueryClient
     from output.formatter import format_result_for_slack, format_error_message
-    from guardrails import check_pii_in_question
+    from guardrails import check_pii_in_question, check_malicious_input
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")
     raise
@@ -87,13 +141,37 @@ def handle_message(event, say, client):
             say(pii_error)
             return
         
-        # Step 2: Execute the query
+        # Step 2: Check for malicious code injection attempts
+        is_malicious, malicious_error = check_malicious_input(text)
+        if is_malicious:
+            logger.warning(f"Malicious input blocked from {user}")
+            say(malicious_error)
+            return
+        
+        # Step 3: Execute the query
         query_result = query_client.query(text)
         
-        # Step 3: Format and send response
+        # Step 4: Format and send response
         if query_result['success']:
-            formatted_message = format_result_for_slack(query_result['result'])
-            logger.info(f"Query successful, sending formatted result")
+            result = query_result['result']
+            logger.info(f"Query result type: {type(result).__name__}")
+
+            chart_file = _extract_chart_file_path(result)
+            if chart_file:
+                logger.info("Query returned chart file, uploading image to Slack")
+                try:
+                    client.files_upload_v2(
+                        channel=channel,
+                        file=chart_file,
+                        initial_comment="📈 Here is your chart."
+                    )
+                except Exception as upload_error:
+                    logger.error(f"Chart upload failed: {upload_error}", exc_info=True)
+                    say("❌ I generated a chart but couldn't upload it. Please try again.")
+                return
+
+            formatted_message = format_result_for_slack(result)
+            logger.info("Query successful, sending formatted result")
             say(formatted_message)
         else:
             error_message = format_error_message(query_result['error'])

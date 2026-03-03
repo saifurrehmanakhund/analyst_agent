@@ -23,6 +23,48 @@ PII_PATTERNS = [
 
 _PII_RE = re.compile("|".join(PII_PATTERNS), re.IGNORECASE)
 
+# Patterns that suggest code injection attempts
+MALICIOUS_PATTERNS = [
+    # Python code execution
+    r"\bexec\s*\(",
+    r"\beval\s*\(",
+    r"__import__",
+    r"\bcompile\s*\(",
+    r"\bglobals\s*\(",
+    r"\blocals\s*\(",
+    
+    # OS/System commands
+    r"\bos\s*\.\s*system",
+    r"\bos\s*\.\s*popen",
+    r"\bsubprocess",
+    r"\bshutil\s*\.\s*rmtree",
+    r"\bopen\s*\(",
+    
+    # File operations (overly broad for data queries)
+    r"\bwrite\s*\(",
+    r"\bremove\s*\(",
+    r"\bunlink\s*\(",
+    r"\bdelete.*file",
+    
+    # SQL injection attempts (even though we don't use raw SQL)
+    r"\bDROP\s+TABLE",
+    r"\bDROP\s+DATABASE",
+    r"\bDELETE\s+FROM",
+    r"\bTRUNCATE",
+    r"\bALTER\s+TABLE",
+    r"\bUPDATE\s+.*\s+SET",
+    r";\s*DROP",
+    r"--\s*$",  # SQL comment at end
+    
+    # Network/external access
+    r"\bsocket\s*\.",
+    r"\brequests\s*\.",
+    r"\burllib",
+    r"\bhttp\s*\.",
+]
+
+_MALICIOUS_RE = re.compile("|".join(MALICIOUS_PATTERNS), re.IGNORECASE)
+
 
 def check_pii_columns(columns: list[str]) -> list[str]:
     """
@@ -39,6 +81,38 @@ def check_pii_columns(columns: list[str]) -> list[str]:
         Names of columns that appear to contain PII
     """
     return [col for col in columns if _PII_RE.search(col)]
+
+
+def check_malicious_input(question: str) -> tuple[bool, str | None]:
+    """
+    Check if a user question contains potentially malicious code patterns.
+    
+    Parameters
+    ----------
+    question : str
+        The natural language question from the user
+        
+    Returns
+    -------
+    tuple[bool, str | None]
+        (is_malicious, error_message)
+        - is_malicious: True if question contains suspicious patterns
+        - error_message: User-friendly message if blocked, None otherwise
+    """
+    if not question:
+        return False, None
+    
+    # Check for malicious patterns
+    if _MALICIOUS_RE.search(question):
+        logger.warning(f"Malicious pattern detected in question: {question[:100]}")
+        return True, "❌ Your question contains potentially unsafe patterns. Please rephrase your question using natural language only."
+    
+    # Check for excessive length (potential DoS)
+    if len(question) > 1000:
+        logger.warning(f"Excessively long question ({len(question)} chars): {question[:100]}")
+        return True, "❌ Question is too long. Please ask a more concise question (max 1000 characters)."
+    
+    return False, None
 
 
 def check_pii_in_question(question: str) -> tuple[bool, str | None]:
