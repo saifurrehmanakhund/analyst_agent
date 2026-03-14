@@ -6,12 +6,24 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _unwrap_pandasai_response(result: Any) -> Any:
+    """Unwrap a pandasai v3 response object to its inner value."""
+    try:
+        from pandasai.core.response import BaseResponse
+        if isinstance(result, BaseResponse):
+            return result.value
+    except ImportError:
+        pass
+    return result
+
+
 def format_result_for_slack(result: Any) -> str:
     """
     Convert a query result into a Slack-friendly message.
     
     Handles DataFrames, strings, lists, and other types. Returns text summary
-    with markdown table blocks for tabular data.
+    with markdown table blocks for tabular data. Automatically unwraps
+    pandasai v3 response objects.
     
     Parameters
     ----------
@@ -24,11 +36,14 @@ def format_result_for_slack(result: Any) -> str:
         Formatted message ready for Slack
     """
     try:
-        # If result is already a string, return as-is
+        result = _unwrap_pandasai_response(result)
+
         if isinstance(result, str):
             return _truncate_message(result)
         
-        # Handle pandas DataFrames
+        if isinstance(result, (int, float)):
+            return _truncate_message(str(result))
+
         try:
             import pandas as pd
             if isinstance(result, pd.DataFrame):
@@ -36,11 +51,9 @@ def format_result_for_slack(result: Any) -> str:
         except ImportError:
             logger.warning("pandas not available for dataframe formatting")
         
-        # Handle lists/dicts
         if isinstance(result, (list, dict)):
             return _format_data_structure(result)
         
-        # Fallback: convert to string
         return _truncate_message(str(result))
         
     except Exception as e:

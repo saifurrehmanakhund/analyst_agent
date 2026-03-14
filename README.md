@@ -57,6 +57,7 @@ An AI-powered Slack bot that lets you query your PostgreSQL database using natur
 	- Go to "OAuth & Permissions"
 	- Add these Bot Token Scopes:
 	  - `chat:write`
+	  - `files:write`
 	  - `channels:history`
 	  - `groups:history`
 	  - `im:history`

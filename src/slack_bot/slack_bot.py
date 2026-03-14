@@ -2,11 +2,19 @@
 
 import os
 import logging
-import re
+import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.error import BoltError
+from pandasai.core.response import (
+    BaseResponse,
+    ChartResponse,
+    DataFrameResponse,
+    ErrorResponse,
+    NumberResponse,
+    StringResponse,
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -40,56 +48,24 @@ if missing_vars:
 app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
 
 
-def _to_existing_file_path(candidate: str) -> str | None:
-    """Return normalized existing file path, or None if not found."""
-    if not candidate:
-        return None
-
-    cleaned = candidate.strip().strip("`\"'")
-    cleaned = cleaned.replace("\\", "/")
-    if not cleaned:
-        return None
-
-    path_obj = Path(cleaned)
-    if path_obj.is_file():
-        return str(path_obj)
-
-    workspace_path = Path.cwd() / path_obj
-    if workspace_path.is_file():
-        return str(workspace_path)
-
+def _save_chart_to_tempfile(chart: ChartResponse) -> str | None:
+    """Save a pandasai v3 ChartResponse to a temporary PNG and return the path."""
+    try:
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp.close()
+        chart.save(tmp.name)
+        if Path(tmp.name).stat().st_size > 0:
+            return tmp.name
+    except Exception as exc:
+        logger.error("Failed to save ChartResponse to temp file: %s", exc, exc_info=True)
     return None
 
 
-def _extract_chart_file_path(result: object) -> str | None:
-    """Extract an existing chart image path from a PandasAI result."""
-    image_exts = (".png", ".jpg", ".jpeg", ".gif", ".webp")
-
-    if isinstance(result, str):
-        direct = _to_existing_file_path(result)
-        if direct and direct.lower().endswith(image_exts):
-            return direct
-
-        matches = re.findall(r"(?:[\w./\\-]+)\.(?:png|jpg|jpeg|gif|webp)", result, flags=re.IGNORECASE)
-        for match in matches:
-            found = _to_existing_file_path(match)
-            if found:
-                return found
-
-    if isinstance(result, dict):
-        for key in ("path", "file", "filepath", "value", "result"):
-            if key in result:
-                found = _extract_chart_file_path(result[key])
-                if found:
-                    return found
-
-    if isinstance(result, (list, tuple)):
-        for item in result:
-            found = _extract_chart_file_path(item)
-            if found:
-                return found
-
-    return None
+def _unwrap_response_value(result: object) -> object:
+    """If *result* is a pandasai v3 response object, return its inner value."""
+    if isinstance(result, BaseResponse):
+        return result.value
+    return result
 
 # Import AI and formatting modules
 try:
@@ -156,21 +132,30 @@ def handle_message(event, say, client):
             result = query_result['result']
             logger.info(f"Query result type: {type(result).__name__}")
 
-            chart_file = _extract_chart_file_path(result)
-            if chart_file:
-                logger.info("Query returned chart file, uploading image to Slack")
-                try:
-                    client.files_upload_v2(
-                        channel=channel,
-                        file=chart_file,
-                        initial_comment="📈 Here is your chart."
-                    )
-                except Exception as upload_error:
-                    logger.error(f"Chart upload failed: {upload_error}", exc_info=True)
-                    say("❌ I generated a chart but couldn't upload it. Please try again.")
+            if isinstance(result, ChartResponse):
+                chart_file = _save_chart_to_tempfile(result)
+                if chart_file:
+                    logger.info("Query returned ChartResponse, uploading image to Slack")
+                    try:
+                        client.files_upload_v2(
+                            channel=channel,
+                            file=chart_file,
+                            initial_comment="📈 Here is your chart.",
+                        )
+                    except Exception as upload_error:
+                        logger.error(f"Chart upload failed: {upload_error}", exc_info=True)
+                        say("❌ I generated a chart but couldn't upload it. Please try again.")
+                    finally:
+                        Path(chart_file).unlink(missing_ok=True)
+                    return
+                logger.warning("ChartResponse could not be saved; falling back to text")
+
+            if isinstance(result, ErrorResponse):
+                say(format_error_message(result.value))
                 return
 
-            formatted_message = format_result_for_slack(result)
+            unwrapped = _unwrap_response_value(result)
+            formatted_message = format_result_for_slack(unwrapped)
             logger.info("Query successful, sending formatted result")
             say(formatted_message)
         else:
